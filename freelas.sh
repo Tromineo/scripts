@@ -29,6 +29,14 @@ GRAY='\033[0;37m'
 RED='\033[0;31m'
 RESET='\033[0m'
 
+# Verificação de dependências
+for _cmd in curl php; do
+  if ! command -v "$_cmd" &>/dev/null; then
+    echo -e "${RED}Erro: '$_cmd' não encontrado. Instale-o e tente novamente.${RESET}" >&2
+    exit 1
+  fi
+done
+
 if [[ -z "$1" ]]; then
   echo -e "Uso: $0 <palavra-chave> [limite] [ordem]"
   echo -e "  $0 nodejs"
@@ -40,6 +48,13 @@ if [[ -z "$1" ]]; then
 fi
 
 QUERY="$1"
+
+# Validação do argumento limite
+if [[ -n "$2" ]] && ! [[ "$2" =~ ^[0-9]+$ ]]; then
+  echo -e "${RED}Erro: o limite deve ser um número inteiro não negativo.${RESET}" >&2
+  exit 1
+fi
+
 LIMITE="${2:-0}"
 ORDER="${3:-}"
 # Calcula quantas páginas buscar (10 resultados por página)
@@ -48,10 +63,16 @@ if [[ "$LIMITE" -gt 0 ]]; then
 else
   PAGES=1
 fi
-QUERY_ENC=$(php -r 'echo rawurlencode($argv[1]);' -- "$QUERY")
+QUERY_ENC=$(php -r 'echo rawurlencode($argv[1]);' -- "$QUERY") || {
+  echo -e "${RED}Erro ao codificar a query.${RESET}" >&2
+  exit 1
+}
 
 # Script PHP escrito em arquivo temporário
-PYPARSER=$(mktemp /tmp/freelas_parser_XXXXXX.php)
+PYPARSER=$(mktemp /tmp/freelas_parser_XXXXXX.php) || {
+  echo -e "${RED}Erro ao criar arquivo temporário.${RESET}" >&2
+  exit 1
+}
 cat > "$PYPARSER" << 'PHPEOF'
 <?php
 function parse_page(string $content): array {
@@ -171,8 +192,16 @@ foreach ($all_items as $item) {
 PHPEOF
 
 TOTAL=0
-ALL_HTML_FILE=$(mktemp /tmp/freelas_html_XXXXXX.txt)
+ALL_HTML_FILE=$(mktemp /tmp/freelas_html_XXXXXX.txt) || {
+  echo -e "${RED}Erro ao criar arquivo temporário.${RESET}" >&2
+  rm -f "$PYPARSER"
+  exit 1
+}
 FIRST_PAGE=1
+PAGES_FETCHED=0
+
+# Garante limpeza dos arquivos temporários em caso de saída ou interrupção
+trap 'rm -f "$ALL_HTML_FILE" "$PYPARSER"' EXIT INT TERM
 
 echo -e "${GRAY}$(printf '═%.0s' {1..60})${RESET}"
 ORDER_LABEL=""
@@ -185,10 +214,24 @@ echo -e "${GRAY}$(printf '─%.0s' {1..60})${RESET}"
 # Coleta todas as páginas em arquivo temporário
 for page in $(seq 1 "$PAGES"); do
   FETCH_URL="${BASE_URL}?q=${QUERY_ENC}&category=${CATEGORY}&page=${page}"
-  HTML=$(curl -s "$FETCH_URL" -H "User-Agent: $UA")
+  _TMPBODY=$(mktemp /tmp/freelas_body_XXXXXX.html)
+  HTTP_CODE=$(curl -s -o "$_TMPBODY" -w "%{http_code}" "$FETCH_URL" -H "User-Agent: $UA")
+  CURL_EXIT=$?
+  HTML=$(cat "$_TMPBODY" 2>/dev/null)
+  rm -f "$_TMPBODY"
+
+  if [[ $CURL_EXIT -ne 0 ]]; then
+    echo -e "${RED}Erro de rede ao buscar página ${page} (código curl: ${CURL_EXIT}).${RESET}" >&2
+    continue
+  fi
+
+  if [[ "$HTTP_CODE" -ne 200 ]]; then
+    echo -e "${RED}Erro HTTP ${HTTP_CODE} ao buscar página ${page}.${RESET}" >&2
+    continue
+  fi
 
   if [[ -z "$HTML" ]]; then
-    echo -e "${RED}Erro ao buscar página ${page}${RESET}" >&2
+    echo -e "${RED}Resposta vazia ao buscar página ${page}.${RESET}" >&2
     continue
   fi
 
@@ -199,10 +242,19 @@ for page in $(seq 1 "$PAGES"); do
     printf '\n===\n' >> "$ALL_HTML_FILE"
     echo "$HTML" >> "$ALL_HTML_FILE"
   fi
+  PAGES_FETCHED=$((PAGES_FETCHED + 1))
 done
+
+if [[ $PAGES_FETCHED -eq 0 ]]; then
+  echo -e "${RED}Nenhuma página foi buscada com sucesso. Verifique sua conexão ou tente mais tarde.${RESET}" >&2
+  exit 1
+fi
 
 # Parse, ordenação e exibição — tudo no PHP
 php "$PYPARSER" "$ORDER" "$LIMITE" < "$ALL_HTML_FILE"
+PHP_EXIT=$?
+if [[ $PHP_EXIT -ne 0 ]]; then
+  echo -e "${RED}Erro ao processar os resultados (PHP exit: ${PHP_EXIT}).${RESET}" >&2
+fi
 
-rm -f "$ALL_HTML_FILE" "$PYPARSER"
 echo -e "${GRAY}$(printf '═%.0s' {1..60})${RESET}"
