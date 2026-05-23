@@ -37,13 +37,35 @@ for _cmd in curl php; do
   fi
 done
 
+# Parsing de argumentos nomeados e posicionais
+FILTRO_NOME=""
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --nome|-n)
+      if [[ -z "$2" || "$2" == --* ]]; then
+        echo -e "${RED}Erro: --nome requer um valor.${RESET}" >&2
+        exit 1
+      fi
+      FILTRO_NOME="$2"
+      shift 2
+      ;;
+    *)
+      POSITIONAL+=("$1")
+      shift
+      ;;
+  esac
+done
+set -- "${POSITIONAL[@]}"
+
 if [[ -z "$1" ]]; then
-  echo -e "Uso: $0 <palavra-chave> [limite] [ordem]"
+  echo -e "Uso: $0 <palavra-chave> [limite] [ordem] [--nome <filtro>]"
   echo -e "  $0 nodejs"
   echo -e "  $0 php 5"
   echo -e "  $0 php 5 propostas:desc"
   echo -e "  $0 php 10 interessados"
   echo -e "  $0 php 20 data:desc"
+  echo -e "  $0 php --nome \"landing page\""
   exit 1
 fi
 
@@ -117,7 +139,7 @@ function parse_page(string $content): array {
         if (preg_match('/class="item-text description[^"]*"[^>]*data-content="([^"]*)"/', $block, $dm)) {
             $raw  = html_entity_decode($dm[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
             $raw  = preg_replace(['/<br\s*\/?>/', '/<[^>]+>/', '/\s+/'], [' ', '', ' '], trim($raw));
-            $desc = mb_strlen($raw) > 200 ? mb_substr($raw, 0, 200) . '...' : $raw;
+            $desc = $raw;
         }
 
         $flags = [];
@@ -168,6 +190,12 @@ if ($order_arg) {
     }
 }
 
+$filtro_nome = $argv[3] ?? '';
+if ($filtro_nome !== '') {
+    $f = mb_strtolower($filtro_nome, 'UTF-8');
+    $all_items = array_values(array_filter($all_items, fn($it) => mb_strpos(mb_strtolower($it['title'], 'UTF-8'), $f) !== false));
+}
+
 $limite = (int)($argv[2] ?? 0);
 if ($limite > 0) $all_items = array_slice($all_items, 0, $limite);
 
@@ -206,9 +234,11 @@ trap 'rm -f "$ALL_HTML_FILE" "$PYPARSER"' EXIT INT TERM
 echo -e "${GRAY}$(printf '═%.0s' {1..60})${RESET}"
 ORDER_LABEL=""
 LIMITE_LABEL="todos os resultados"
+NOME_LABEL=""
 [[ -n "$ORDER" ]] && ORDER_LABEL=" | Ordem: ${ORDER}"
 [[ "$LIMITE" -gt 0 ]] && LIMITE_LABEL="top ${LIMITE}"
-echo -e "${GRAY}Busca: \"${QUERY}\" | ${LIMITE_LABEL}${ORDER_LABEL}${RESET}"
+[[ -n "$FILTRO_NOME" ]] && NOME_LABEL=" | Filtro: \"${FILTRO_NOME}\""
+echo -e "${GRAY}Busca: \"${QUERY}\" | ${LIMITE_LABEL}${ORDER_LABEL}${NOME_LABEL}${RESET}"
 echo -e "${GRAY}$(printf '─%.0s' {1..60})${RESET}"
 
 # Coleta todas as páginas em arquivo temporário
@@ -251,7 +281,7 @@ if [[ $PAGES_FETCHED -eq 0 ]]; then
 fi
 
 # Parse, ordenação e exibição — tudo no PHP
-php "$PYPARSER" "$ORDER" "$LIMITE" < "$ALL_HTML_FILE"
+php "$PYPARSER" "$ORDER" "$LIMITE" "$FILTRO_NOME" < "$ALL_HTML_FILE"
 PHP_EXIT=$?
 if [[ $PHP_EXIT -ne 0 ]]; then
   echo -e "${RED}Erro ao processar os resultados (PHP exit: ${PHP_EXIT}).${RESET}" >&2
