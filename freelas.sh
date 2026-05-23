@@ -21,6 +21,7 @@ UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124.0 Safari/537.3
 BASE_URL='https://www.99freelas.com.br/projects'
 CATEGORY='web-mobile-e-software'
 
+## Cores em ANSI porque não estou usando o tput que é mais portátil (funciona mesmo em terminais sem suporte a 256 cores) então fica mais simples. Se quiser mudar, é só alterar aqui. Por exemplo: BOLD=$(tput bold), CYAN=$(tput setaf 6), etc.
 BOLD='\033[1m'
 CYAN='\033[0;36m'
 YELLOW='\033[1;33m'
@@ -29,7 +30,7 @@ GRAY='\033[0;37m'
 RED='\033[0;31m'
 RESET='\033[0m'
 
-# Verificação de dependências
+# Verificação de dependências do curl e php necessárias para o funcionamento do script. Se algum deles não estiver instalado, o script exibe uma mensagem de erro e termina.
 for _cmd in curl php; do
   if ! command -v "$_cmd" &>/dev/null; then
     echo -e "${RED}Erro: '$_cmd' não encontrado. Instale-o e tente novamente.${RESET}" >&2
@@ -37,9 +38,11 @@ for _cmd in curl php; do
   fi
 done
 
-# Parsing de argumentos nomeados e posicionais
+# Parsing de argumentos nomeados e posicionais. O parsing serve para separar os argumentos posicionais (keyword, limite, ordem) dos argumentos nomeados (como --nome). O script suporta o argumento nomeado --nome ou -n para filtrar os resultados por um texto presente no título do projeto. Os argumentos posicionais são armazenados em uma array POSITIONAL, enquanto o valor do filtro de nome é armazenado na variável NOME_FILTER.
+## Aqui permite o uso exclusivo do parametro de nome
 FILTRO_NOME=""
-POSITIONAL=()
+PARAMETROS=()
+#Enquanto 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --nome|-n)
@@ -51,14 +54,15 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     *)
-      POSITIONAL+=("$1")
+      PARAMETROS+=("$1")
       shift
       ;;
   esac
 done
-set -- "${POSITIONAL[@]}"
+set -- "${PARAMETROS[@]}"
 
-if [[ -z "$1" ]]; then
+## Se não passar nada de parametro exibe texto de uso e exemplos
+if [[ -z "$1" && -z "$FILTRO_NOME" ]]; then
   echo -e "Uso: $0 <palavra-chave> [limite] [ordem] [--nome <filtro>]"
   echo -e "  $0 nodejs"
   echo -e "  $0 php 5"
@@ -66,10 +70,11 @@ if [[ -z "$1" ]]; then
   echo -e "  $0 php 10 interessados"
   echo -e "  $0 php 20 data:desc"
   echo -e "  $0 php --nome \"landing page\""
+  echo -e "  $0 --nome \"landing page\"          # busca sem keyword, filtra por nome"
   exit 1
 fi
 
-QUERY="$1"
+QUERY="${1:-}"
 
 # Validação do argumento limite
 if [[ -n "$2" ]] && ! [[ "$2" =~ ^[0-9]+$ ]]; then
@@ -90,11 +95,13 @@ QUERY_ENC=$(php -r 'echo rawurlencode($argv[1]);' -- "$QUERY") || {
   exit 1
 }
 
-# Script PHP escrito em arquivo temporário
+# Vai executar o comando mktemp OU vai cair na exibição da mensagem de erro.
+## O padrão "XXX" serve pra gerar caracteres aleatorios.
 PYPARSER=$(mktemp /tmp/freelas_parser_XXXXXX.php) || {
   echo -e "${RED}Erro ao criar arquivo temporário.${RESET}" >&2
   exit 1
 }
+## Colocamos aqui o php que vai fazer o parsing dos resultados
 cat > "$PYPARSER" << 'PHPEOF'
 <?php
 function parse_page(string $content): array {
@@ -209,17 +216,24 @@ $SEP   = str_repeat('─', 60);
 
 $total = count($all_items);
 foreach ($all_items as $item) {
-    if ($item['flags']) echo "{$YELLOW}[{$item['flags']}]{$RESET}\n";
+    if ($item['flags']){
+      echo "{$YELLOW}[{$item['flags']}]{$RESET}\n";
+    }
     echo "{$BOLD}{$CYAN}#{$item['id']} — {$item['title']}{$RESET}\n";
     echo "{$GRAY}{$item['categoria']} | {$item['nivel']} | {$item['data']} | Propostas: {$item['propostas']} | Interessados: {$item['interessados']}{$RESET}\n";
-    if ($item['skills']) echo "{$GRAY}Skills: {$item['skills']}{$RESET}\n";
-    if ($item['desc'])   echo "{$item['desc']}\n";
+    if ($item['skills']) { 
+      echo "{$GRAY}Skills: {$item['skills']}{$RESET}\n";
+    }
+    if ($item['desc']) { 
+      echo "{$item['desc']}\n";
+    }
     echo "{$BLUE}{$item['url']}{$RESET}\n";
     echo "{$GRAY}{$SEP}{$RESET}\n";
 }
 PHPEOF
 
 TOTAL=0
+# Cria outro arquivo temporário mas agora para armazenar o HTML
 ALL_HTML_FILE=$(mktemp /tmp/freelas_html_XXXXXX.txt) || {
   echo -e "${RED}Erro ao criar arquivo temporário.${RESET}" >&2
   rm -f "$PYPARSER"
@@ -228,17 +242,22 @@ ALL_HTML_FILE=$(mktemp /tmp/freelas_html_XXXXXX.txt) || {
 FIRST_PAGE=1
 PAGES_FETCHED=0
 
-# Garante limpeza dos arquivos temporários em caso de saída ou interrupção
+# Garante limpeza dos arquivos temporários em caso de saída ou interrupção via trap (comando UNIX)
 trap 'rm -f "$ALL_HTML_FILE" "$PYPARSER"' EXIT INT TERM
-
+# Imprime as linhas de separação no começo da exibição
 echo -e "${GRAY}$(printf '═%.0s' {1..60})${RESET}"
+# Define umas variaveis
 ORDER_LABEL=""
 LIMITE_LABEL="todos os resultados"
 NOME_LABEL=""
+# Faz um if pra ver se tem parametro order. Se tiver, define ORDER_LABEL.
 [[ -n "$ORDER" ]] && ORDER_LABEL=" | Ordem: ${ORDER}"
+# Faz outro if pra ver se tem parametro limite. Se tiver, define LIMITE_LABEL
 [[ "$LIMITE" -gt 0 ]] && LIMITE_LABEL="top ${LIMITE}"
+
 [[ -n "$FILTRO_NOME" ]] && NOME_LABEL=" | Filtro: \"${FILTRO_NOME}\""
-echo -e "${GRAY}Busca: \"${QUERY}\" | ${LIMITE_LABEL}${ORDER_LABEL}${NOME_LABEL}${RESET}"
+QUERY_LABEL="${QUERY:-"(todos os projetos)"}"
+echo -e "${GRAY}Busca: \"${QUERY_LABEL}\" | ${LIMITE_LABEL}${ORDER_LABEL}${NOME_LABEL}${RESET}"
 echo -e "${GRAY}$(printf '─%.0s' {1..60})${RESET}"
 
 # Coleta todas as páginas em arquivo temporário
@@ -249,17 +268,17 @@ for page in $(seq 1 "$PAGES"); do
   CURL_EXIT=$?
   HTML=$(cat "$_TMPBODY" 2>/dev/null)
   rm -f "$_TMPBODY"
-
+# Valida se a variavel de saida do curl ta com um valor diferente de 0, o que indica erro. Se tiver erro, exibe mensagem e continua pro próximo loop.
   if [[ $CURL_EXIT -ne 0 ]]; then
     echo -e "${RED}Erro de rede ao buscar página ${page} (código curl: ${CURL_EXIT}).${RESET}" >&2
     continue
   fi
-
+# Valida se o código HTTP é diferente de 200, o que indica que a página não foi carregada corretamente. Se tiver erro, exibe mensagem e continua pro próximo loop.
   if [[ "$HTTP_CODE" -ne 200 ]]; then
     echo -e "${RED}Erro HTTP ${HTTP_CODE} ao buscar página ${page}.${RESET}" >&2
     continue
   fi
-
+# Valida se o HTML ta vazio, o que indica que a página não foi carregada corretamente. Se estiver vazio, exibe mensagem e continua pro próximo loop.
   if [[ -z "$HTML" ]]; then
     echo -e "${RED}Resposta vazia ao buscar página ${page}.${RESET}" >&2
     continue
