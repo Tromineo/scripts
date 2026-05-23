@@ -47,14 +47,16 @@ Busca projetos na categoria Web, Mobile & Software do [99freelas.com.br](https:/
 
 **Uso:**
 ```bash
-./freelas.sh <palavra-chave> [limite] [ordem]
+./freelas.sh <palavra-chave> [limite] [ordem] [--nome <texto>]
+./freelas.sh --nome <texto>
 ```
 
 | Parâmetro | Descrição | Padrão |
 |-----------|-----------|--------|
-| `palavra-chave` | Termo de busca | obrigatório |
+| `palavra-chave` | Termo de busca | — |
 | `limite` | Número máximo de resultados | `10` |
 | `ordem` | Critério de ordenação (ver opções abaixo) | — |
+| `--nome`, `-n` | Filtra resultados pelo título do projeto | — |
 
 **Opções de ordem:**
 
@@ -73,6 +75,8 @@ Busca projetos na categoria Web, Mobile & Software do [99freelas.com.br](https:/
 ./freelas.sh php 5
 ./freelas.sh php 5 propostas:desc
 ./freelas.sh php 20 data:desc
+./freelas.sh php --nome "landing page"
+./freelas.sh --nome "e-commerce"
 ```
 
 **Dependências:**
